@@ -23,7 +23,9 @@ manifest.webmanifest    Metadatos de instalación
 sw.js                   Service worker (offline)
 css/app.css             Estilos, tokens de color en :root
 js/
-  plan.js               LA RUTINA Y LA DIETA. Editar aquí para cambiar el plan.
+  plan.js               CATÁLOGO DE EJERCICIOS, SESIONES Y PLANTILLA DE DIETA.
+  foods.js              Base de datos de alimentos (148) + consulta por código
+                        de barras contra Open Food Facts.
   store.js              Única capa de persistencia. Migrar de almacenamiento
                         solo requiere tocar este archivo.
   charts.js             Gráficas SVG sin dependencias
@@ -41,13 +43,45 @@ js/
 2. Añade una entrada a `TABS` en `js/app.js`.
 3. Añade la ruta del archivo a `SHELL` en `sw.js` y sube el número de `CACHE`.
 
-## Cambiar el plan de entreno o la dieta
+## Sustituir ejercicios
 
-Todo está en `js/plan.js`. Los ejercicios se identifican por `id`: **no cambies un
-`id` existente** si ya tienes historial, porque el progreso se guarda contra él.
-Cambiar `name` es seguro; cambiar `id` empieza el historial de cero.
+`EXERCISES` en `plan.js` es el catálogo de movimientos; cada uno declara sus
+`alts` (alternativas). Las sesiones no contienen ejercicios: los **referencian**
+por `ref`. Sustituir es cambiar a qué id apunta ese hueco.
 
-Lo mismo aplica a los `id` de los ítems de comida.
+Desde la app: botón `⋯` en la tarjeta del ejercicio. Un ejercicio sustituido
+lleva el símbolo `↺` junto al nombre.
+
+`DEFAULT_SWAPS` son las sustituciones activas de fábrica. Lo que elijas en la app
+manda sobre ellas; «Restaurar ejercicios originales» en Ajustes las devuelve.
+
+**El historial se guarda contra el id del ejercicio real, no contra el hueco.**
+Al sustituir, el ejercicio nuevo empieza su historial de cero — que es lo
+correcto, porque no son el mismo movimiento. Si vuelves al original, recuperas
+su historial intacto.
+
+## Cambiar el plan de dieta
+
+`MEALS` en `plan.js` es solo una plantilla para rellenar el día de un toque.
+Cada ítem apunta a un alimento de `foods.js` por su id.
+
+Para añadir alimentos permanentes, escríbelos en `FOODS` (`foods.js`). Los que
+crees desde la app se guardan en tu almacenamiento, no en el código.
+
+**No cambies un `id` existente** si ya tienes historial: el progreso y los
+registros se guardan contra él. Cambiar `name` es seguro.
+
+## Registro de comidas
+
+Tres formas de añadir un alimento:
+
+1. Tocar el nombre de una comida de la plantilla: añade todos sus ítems de golpe.
+2. Botón `+` de cualquier comida: buscador sobre la base local y tus alimentos.
+3. «Código de barras» dentro del buscador: consulta Open Food Facts (sin clave
+   de API, requiere conexión) y guarda el producto entre los tuyos.
+
+Los totales comparan con los objetivos de Ajustes y avisan si te has quedado
+corto o te has pasado, con un margen del 5 % definido en `TOLERANCE`.
 
 ## Después de modificar archivos
 
@@ -57,7 +91,9 @@ versión antigua.
 
 ## Datos y copia de seguridad
 
-Se guardan en `localStorage` bajo la clave `entreno.v1`. Safari borra el
+Se guardan en `localStorage` bajo la clave `entreno.v1`, con el esquema
+versionado dentro (actualmente v2; `migrate()` en `store.js` convierte datos
+antiguos al arrancar). Safari borra el
 almacenamiento de sitios web que no se visitan en 7 días, pero **las apps añadidas
 a la pantalla de inicio están exentas** de esa limpieza.
 

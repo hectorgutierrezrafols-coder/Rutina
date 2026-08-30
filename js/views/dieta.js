@@ -1,35 +1,20 @@
-import { MEALS } from '../plan.js';
+import { MEALS, TOLERANCE } from '../plan.js';
+import { FOOD_INDEX, searchFoods, lookupBarcode } from '../foods.js';
 import * as store from '../store.js';
 
 let viewDate = store.todayKey();
-let editing = false;
+let sheet = null; // null | {mode:'search'|'custom', mealId, query, results, pending}
 
-function itemKcal(item) {
-  const q = store.qtyOf(item);
-  return { kcal: (item.kcal * q) / item.per, prot: (item.prot * q) / item.per };
-}
-
-function totals(date) {
-  const day = store.getDiet(date);
-  let kcal = 0, prot = 0, planKcal = 0, planProt = 0;
-  MEALS.forEach(m => m.items.forEach(it => {
-    const v = itemKcal(it);
-    planKcal += v.kcal; planProt += v.prot;
-    if (day[it.id]) { kcal += v.kcal; prot += v.prot; }
-  }));
-  return {
-    kcal: Math.round(kcal), prot: Math.round(prot),
-    planKcal: Math.round(planKcal), planProt: Math.round(planProt),
-  };
-}
+// --- Vista principal --------------------------------------------------------
 
 export function render(root) {
   const date = viewDate;
   const isToday = date === store.todayKey();
   const d = new Date(date + 'T12:00:00');
-  const t = totals(date);
+  const t = store.dayTotals(date);
   const targets = store.getTargets();
   const bw = store.getBodyweight(date);
+  const entries = store.getEntries(date);
 
   root.innerHTML = `
     <header class="view-head">
@@ -43,20 +28,7 @@ export function render(root) {
       </div>
     </header>
 
-    <div class="totals">
-      <div class="total">
-        <span class="total-num">${t.kcal}</span>
-        <span class="total-den">/ ${targets.kcal}</span>
-        <span class="eyebrow">kcal</span>
-        <div class="progress-bar slim"><span style="width:${Math.min(100, (t.kcal / targets.kcal) * 100)}%"></span></div>
-      </div>
-      <div class="total">
-        <span class="total-num">${t.prot}</span>
-        <span class="total-den">/ ${targets.prot}</span>
-        <span class="eyebrow">g proteína</span>
-        <div class="progress-bar slim"><span style="width:${Math.min(100, (t.prot / targets.prot) * 100)}%"></span></div>
-      </div>
-    </div>
+    ${renderTotals(t, targets)}
 
     <div class="rowline">
       <label class="bw">
@@ -66,60 +38,183 @@ export function render(root) {
                  value="${bw ?? ''}" placeholder="—"> <span class="unit">kg</span>
         </span>
       </label>
-      <button class="chip ${editing ? 'is-on' : ''}" data-edit>
-        ${editing ? 'Listo' : 'Editar cantidades'}
-      </button>
+      ${entries.length ? '<button class="chip subtle" data-clear-day>Vaciar día</button>' : ''}
     </div>
 
-    ${MEALS.map(m => renderMeal(m, date)).join('')}
+    ${MEALS.map(m => renderMeal(m, date, entries)).join('')}
 
-    <p class="hint">El plan completo suma ${t.planKcal} kcal y ${t.planProt} g de proteína.</p>
+    ${renderLoose(entries)}
+
+    <p class="hint">
+      Toca el nombre de una comida para añadirla entera. El botón + busca cualquier
+      alimento. Las cantidades se editan tocando el número.
+    </p>
+
+    ${sheet ? renderSheet() : ''}
   `;
 
   bind(root, date);
+  if (sheet) {
+    const input = root.querySelector('[data-q]');
+    if (input && sheet.mode === 'search') { input.focus(); input.select(); }
+  }
 }
 
-function renderMeal(meal, date) {
-  const day = store.getDiet(date);
-  const all = meal.items.every(it => day[it.id]);
-  const some = meal.items.some(it => day[it.id]);
-  const mk = meal.items.reduce((s, it) => s + itemKcal(it).kcal, 0);
-  const mp = meal.items.reduce((s, it) => s + itemKcal(it).prot, 0);
+// --- Resumen de macros ------------------------------------------------------
+
+function status(value, target) {
+  const lo = target * (1 - TOLERANCE);
+  const hi = target * (1 + TOLERANCE);
+  if (value < lo) return { cls: 'under', diff: Math.round(target - value), label: 'faltan' };
+  if (value > hi) return { cls: 'over', diff: Math.round(value - target), label: 'de más' };
+  return { cls: 'ok', diff: 0, label: 'en objetivo' };
+}
+
+function renderTotals(t, targets) {
+  const k = status(t.kcal, targets.kcal);
+  const p = status(t.prot, targets.prot);
+
+  const card = (num, target, unit, st, extra) => `
+    <div class="total is-${st.cls}">
+      <span class="total-num">${num}</span>
+      <span class="total-den">/ ${target}</span>
+      <span class="eyebrow">${unit}</span>
+      <div class="progress-bar slim"><span style="width:${Math.min(100, (num / target) * 100)}%"></span></div>
+      <span class="total-status">${st.diff ? `${st.diff} ${st.label}` : st.label}</span>
+      ${extra || ''}
+    </div>`;
 
   return `
-    <section class="meal ${all ? 'is-done' : some ? 'is-partial' : ''}">
-      <button class="meal-head" data-meal="${meal.id}" data-all="${all}">
-        <span class="meal-time">${meal.time}</span>
-        <span class="meal-name">${meal.name}</span>
-        <span class="meal-macros">${Math.round(mk)} kcal · ${Math.round(mp)} g</span>
-        <span class="check ${all ? 'on' : ''}" aria-hidden="true">
-          <svg viewBox="0 0 20 20"><path d="M4 10.5l4 4 8-9"/></svg>
-        </span>
-      </button>
-      <div class="items">
-        ${meal.items.map(it => renderItem(it, day)).join('')}
+    <div class="totals">
+      ${card(t.kcal, targets.kcal, 'kcal', k)}
+      ${card(t.prot, targets.prot, 'g proteína', p)}
+    </div>
+    <div class="macro-line">
+      <span><b>${t.carb}</b> g hidratos</span>
+      <span><b>${t.fat}</b> g grasas</span>
+      <span>${t.count} registro${t.count === 1 ? '' : 's'}</span>
+    </div>`;
+}
+
+// --- Comidas de la plantilla ------------------------------------------------
+
+function renderMeal(meal, date, entries) {
+  const mine = entries.filter(e => e.mealId === meal.id);
+  const plan = meal.items.map(it => ({ food: FOOD_INDEX[it.food], qty: it.qty }))
+    .filter(x => x.food);
+  const planKcal = Math.round(plan.reduce((s, x) => s + x.food.kcal * x.qty / x.food.per, 0));
+  const eaten = Math.round(mine.reduce((s, e) => s + e.kcal, 0));
+
+  return `
+    <section class="meal ${mine.length ? 'is-done' : ''}">
+      <div class="meal-head">
+        <button class="meal-fill" data-fill="${meal.id}">
+          <span class="meal-time">${meal.time}</span>
+          <span class="meal-name">${meal.name}</span>
+          <span class="meal-macros">${mine.length ? `${eaten} kcal` : `plan: ${planKcal} kcal`}</span>
+        </button>
+        <button class="meal-add" data-add="${meal.id}" aria-label="Añadir alimento a ${meal.name}">+</button>
       </div>
+      ${mine.length ? `<div class="items">${mine.map(renderEntry).join('')}</div>` : ''}
     </section>`;
 }
 
-function renderItem(item, day) {
-  const q = store.qtyOf(item);
-  const v = itemKcal(item);
-  const custom = store.getState().qty[item.id] !== undefined;
+function renderLoose(entries) {
+  const loose = entries.filter(e => !e.mealId);
   return `
-    <div class="item ${day[item.id] ? 'is-done' : ''}" data-item="${item.id}">
-      <button class="item-check" data-toggle aria-label="Marcar ${item.name}">
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10.5l4 4 8-9"/></svg>
-      </button>
-      <span class="item-name">${item.name}</span>
-      ${editing
-        ? `<input class="num qty ${custom ? 'is-custom' : ''}" type="number" inputmode="decimal"
-                  step="any" data-qty value="${q}" aria-label="Cantidad de ${item.name}">
-           <span class="unit">${item.unit}</span>`
-        : `<span class="item-qty ${custom ? 'is-custom' : ''}">${q} ${item.unit}</span>`}
-      <span class="item-kcal">${Math.round(v.kcal)}</span>
+    <section class="meal ${loose.length ? 'is-done' : ''}">
+      <div class="meal-head">
+        <button class="meal-fill" data-noop>
+          <span class="meal-time">—</span>
+          <span class="meal-name">Fuera de plan</span>
+          <span class="meal-macros">${loose.length ? `${Math.round(loose.reduce((s, e) => s + e.kcal, 0))} kcal` : 'picoteo, extras'}</span>
+        </button>
+        <button class="meal-add" data-add="" aria-label="Añadir alimento suelto">+</button>
+      </div>
+      ${loose.length ? `<div class="items">${loose.map(renderEntry).join('')}</div>` : ''}
+    </section>`;
+}
+
+function renderEntry(e) {
+  return `
+    <div class="item entry" data-uid="${e.uid}">
+      <span class="item-name">${e.name}</span>
+      <input class="num qty" type="number" inputmode="decimal" step="any"
+             data-qty value="${e.qty}" aria-label="Cantidad de ${e.name}">
+      <span class="unit">${e.unit}</span>
+      <span class="item-kcal">${Math.round(e.kcal)}</span>
+      <button class="item-del" data-del aria-label="Quitar ${e.name}">×</button>
     </div>`;
 }
+
+// --- Buscador ---------------------------------------------------------------
+
+function renderSheet() {
+  if (sheet.mode === 'custom') return renderCustomForm();
+
+  const results = sheet.results || [];
+  const recent = store.getRecentFoods();
+  const list = sheet.query ? results : (recent.length ? recent : results);
+
+  return `
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet" role="dialog" aria-label="Buscar alimento">
+      <div class="sheet-grip"></div>
+      <div class="sheet-search">
+        <input type="search" data-q value="${sheet.query || ''}" enterkeyhint="search"
+               placeholder="Buscar alimento…" autocomplete="off" autocorrect="off">
+        <button class="ghost" data-close aria-label="Cerrar">×</button>
+      </div>
+
+      ${sheet.pending ? '<p class="sheet-msg">Consultando…</p>' : ''}
+      ${sheet.error ? `<p class="sheet-msg is-error">${sheet.error}</p>` : ''}
+      ${!sheet.query && recent.length ? '<p class="sheet-label">Recientes</p>' : ''}
+
+      <div class="sheet-list">
+        ${list.length ? list.map(f => `
+          <button class="food" data-food="${f.id}">
+            <span class="food-name">${f.name}${f.hint ? ` <em>(${f.hint})</em>` : ''}</span>
+            <span class="food-macros">${f.kcal} kcal · ${f.prot} g P${f.unit === 'ud' ? ' / ud' : ' / 100' + f.unit}</span>
+          </button>`).join('')
+          : `<p class="sheet-msg">Sin resultados para “${sheet.query}”.</p>`}
+      </div>
+
+      <div class="sheet-foot">
+        <button class="btn" data-custom>Crear alimento</button>
+        <button class="btn" data-barcode>Código de barras</button>
+      </div>
+    </div>`;
+}
+
+function renderCustomForm() {
+  return `
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet" role="dialog" aria-label="Crear alimento">
+      <div class="sheet-grip"></div>
+      <p class="sheet-label">Alimento propio · valores por 100 g o por unidad</p>
+      <div class="form">
+        <label>Nombre <input type="text" data-c="name" placeholder="Tupper de mi madre"></label>
+        <label>Unidad
+          <select data-c="unit">
+            <option value="g">gramos</option>
+            <option value="ml">mililitros</option>
+            <option value="ud">unidad</option>
+          </select>
+        </label>
+        <label>Calorías <input type="number" inputmode="decimal" data-c="kcal" placeholder="0"></label>
+        <label>Proteína <input type="number" inputmode="decimal" data-c="prot" placeholder="0"></label>
+        <label>Hidratos <input type="number" inputmode="decimal" data-c="carb" placeholder="0"></label>
+        <label>Grasas <input type="number" inputmode="decimal" data-c="fat" placeholder="0"></label>
+      </div>
+      ${sheet.error ? `<p class="sheet-msg is-error">${sheet.error}</p>` : ''}
+      <div class="sheet-foot">
+        <button class="btn" data-close>Cancelar</button>
+        <button class="btn primary" data-save-custom>Guardar y añadir</button>
+      </div>
+    </div>`;
+}
+
+// --- Eventos ----------------------------------------------------------------
 
 function bind(root, date) {
   root.querySelectorAll('[data-nav]').forEach(b => {
@@ -131,40 +226,142 @@ function bind(root, date) {
     });
   });
 
-  root.querySelector('[data-edit]').addEventListener('click', () => {
-    editing = !editing;
-    render(root);
+  const bwInput = root.querySelector('[data-bw]');
+  if (bwInput) bwInput.addEventListener('change', e => store.setBodyweight(date, e.target.value));
+
+  const clearDay = root.querySelector('[data-clear-day]');
+  if (clearDay) clearDay.addEventListener('click', () => {
+    if (confirm('¿Borrar todo lo registrado este día?')) { store.clearDay(date); render(root); }
   });
 
-  root.querySelector('[data-bw]').addEventListener('change', e => {
-    store.setBodyweight(date, e.target.value);
-  });
-
-  root.querySelectorAll('.meal-head').forEach(head => {
-    head.addEventListener('click', () => {
-      const meal = MEALS.find(m => m.id === head.dataset.meal);
-      const all = head.dataset.all === 'true';
-      store.setMealDone(date, meal.items.map(i => i.id), !all);
+  root.querySelectorAll('[data-fill]').forEach(b => {
+    b.addEventListener('click', () => {
+      const meal = MEALS.find(m => m.id === b.dataset.fill);
+      const existing = store.getEntries(date).filter(e => e.mealId === meal.id);
+      if (existing.length) {
+        if (!confirm(`Ya hay ${existing.length} registro(s) en ${meal.name}. ¿Añadir la plantilla igualmente?`)) return;
+      }
+      store.addEntries(date, meal.items
+        .map(it => ({ food: FOOD_INDEX[it.food], qty: it.qty, mealId: meal.id }))
+        .filter(x => x.food));
       if (navigator.vibrate) navigator.vibrate(8);
       render(root);
     });
   });
 
-  root.querySelectorAll('.item').forEach(el => {
-    const id = el.dataset.item;
-    el.querySelector('[data-toggle]').addEventListener('click', () => {
-      const done = !el.classList.contains('is-done');
-      store.toggleItem(date, id, done);
+  root.querySelectorAll('[data-add]').forEach(b => {
+    b.addEventListener('click', () => {
+      sheet = { mode: 'search', mealId: b.dataset.add || null, query: '', results: [] };
       render(root);
     });
-    const qty = el.querySelector('[data-qty]');
-    if (qty) {
-      qty.addEventListener('change', () => {
-        store.setQty(id, qty.value === '' ? null : qty.value);
-        render(root);
-      });
+  });
+
+  root.querySelectorAll('.entry').forEach(el => {
+    const uid = el.dataset.uid;
+    el.querySelector('[data-qty]').addEventListener('change', e => {
+      store.updateEntryQty(date, uid, e.target.value);
+      render(root);
+    });
+    el.querySelector('[data-del]').addEventListener('click', () => {
+      store.removeEntry(date, uid);
+      render(root);
+    });
+  });
+
+  if (sheet) bindSheet(root, date);
+}
+
+function bindSheet(root, date) {
+  root.querySelectorAll('[data-close]').forEach(b =>
+    b.addEventListener('click', () => { sheet = null; render(root); }));
+
+  const q = root.querySelector('[data-q]');
+  if (q) {
+    q.addEventListener('input', () => {
+      sheet.query = q.value;
+      sheet.error = null;
+      sheet.results = searchFoods(q.value, store.getCustomFoods());
+      const list = root.querySelector('.sheet-list');
+      const label = root.querySelector('.sheet-label');
+      if (label) label.remove();
+      if (list) {
+        list.innerHTML = sheet.results.length
+          ? sheet.results.map(f => `
+            <button class="food" data-food="${f.id}">
+              <span class="food-name">${f.name}${f.hint ? ` <em>(${f.hint})</em>` : ''}</span>
+              <span class="food-macros">${f.kcal} kcal · ${f.prot} g P${f.unit === 'ud' ? ' / ud' : ' / 100' + f.unit}</span>
+            </button>`).join('')
+          : `<p class="sheet-msg">Sin resultados para “${sheet.query}”.</p>`;
+        bindFoodButtons(root, date);
+      }
+    });
+  }
+
+  bindFoodButtons(root, date);
+
+  const custom = root.querySelector('[data-custom]');
+  if (custom) custom.addEventListener('click', () => {
+    sheet = { mode: 'custom', mealId: sheet.mealId, error: null };
+    render(root);
+  });
+
+  const barcode = root.querySelector('[data-barcode]');
+  if (barcode) barcode.addEventListener('click', async () => {
+    const code = prompt('Escribe el código de barras (los dígitos bajo las rayas):');
+    if (!code) return;
+    sheet.pending = true; sheet.error = null; render(root);
+    try {
+      const food = await lookupBarcode(code);
+      sheet.pending = false;
+      if (!food) { sheet.error = 'Ese producto no está en Open Food Facts o no tiene datos nutricionales.'; render(root); return; }
+      store.addCustomFood(food);
+      askQtyAndAdd(root, date, food);
+    } catch (err) {
+      sheet.pending = false;
+      sheet.error = 'No se ha podido consultar. ¿Tienes conexión?';
+      render(root);
     }
+  });
+
+  const save = root.querySelector('[data-save-custom]');
+  if (save) save.addEventListener('click', () => {
+    const val = k => root.querySelector(`[data-c="${k}"]`).value;
+    const name = val('name').trim();
+    if (!name) { sheet.error = 'Ponle un nombre.'; render(root); return; }
+    const kcal = Number(val('kcal'));
+    if (!kcal && kcal !== 0) { sheet.error = 'Faltan las calorías.'; render(root); return; }
+    const unit = val('unit');
+    const food = store.addCustomFood({
+      id: 'own_' + Date.now().toString(36),
+      name, cat: 'Míos', unit, per: unit === 'ud' ? 1 : 100,
+      kcal, prot: Number(val('prot')) || 0,
+      carb: Number(val('carb')) || 0, fat: Number(val('fat')) || 0,
+    });
+    askQtyAndAdd(root, date, food);
   });
 }
 
-export function reset() { viewDate = store.todayKey(); editing = false; }
+function bindFoodButtons(root, date) {
+  root.querySelectorAll('[data-food]').forEach(b => {
+    b.addEventListener('click', () => {
+      const id = b.dataset.food;
+      const food = FOOD_INDEX[id] || store.getCustomFoods().find(f => f.id === id);
+      if (food) askQtyAndAdd(root, date, food);
+    });
+  });
+}
+
+function askQtyAndAdd(root, date, food) {
+  const suggested = food.unit === 'ud' ? 1 : 100;
+  const label = food.unit === 'ud' ? 'unidades' : food.unit;
+  const raw = prompt(`${food.name}\n¿Cuánto? (${label})`, String(suggested));
+  if (raw === null) return;
+  const qty = Number(raw.replace(',', '.'));
+  if (!qty || qty <= 0) return;
+  store.addEntry(date, food, qty, sheet ? sheet.mealId : null);
+  sheet = null;
+  if (navigator.vibrate) navigator.vibrate(8);
+  render(root);
+}
+
+export function reset() { viewDate = store.todayKey(); sheet = null; }

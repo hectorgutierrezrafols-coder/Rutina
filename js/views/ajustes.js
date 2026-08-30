@@ -5,7 +5,8 @@ export function render(root) {
   const s = store.getState();
   const nWorkouts = Object.keys(s.workouts).length;
   const nDiet = Object.keys(s.diet).length;
-  const nCustom = Object.keys(s.qty).length;
+  const nCustom = (s.customFoods || []).length;
+  const nSwaps = Object.keys(s.swaps || {}).length;
   const bytes = new Blob([store.exportJSON()]).size;
 
   root.innerHTML = `
@@ -32,8 +33,8 @@ export function render(root) {
     <section class="panel">
       <div class="panel-head"><h2>Copia de seguridad</h2></div>
       <p class="panel-foot" style="margin-top:0">
-        ${nWorkouts} días de entreno · ${nDiet} días de dieta · ${nCustom} cantidades ajustadas
-        · ${(bytes / 1024).toFixed(1)} KB
+        ${nWorkouts} días de entreno · ${nDiet} días de dieta · ${nCustom} alimentos propios
+        · ${nSwaps} sustituciones · ${(bytes / 1024).toFixed(1)} KB
       </p>
       <div class="btn-row">
         <button class="btn" data-export>Exportar a archivo</button>
@@ -46,10 +47,24 @@ export function render(root) {
       </p>
     </section>
 
+    ${nCustom ? `
+    <section class="panel">
+      <div class="panel-head"><h2>Mis alimentos</h2></div>
+      <div class="items">
+        ${s.customFoods.map(f => `
+          <div class="item">
+            <span class="item-name">${f.name}</span>
+            <span class="item-kcal">${f.kcal}</span>
+            <button class="item-del" data-delfood="${f.id}" aria-label="Borrar ${f.name}">×</button>
+          </div>`).join('')}
+      </div>
+      <p class="panel-foot">Los que creas o traigas por código de barras se guardan aquí.</p>
+    </section>` : ''}
+
     <section class="panel">
       <div class="panel-head"><h2>Restablecer</h2></div>
       <div class="btn-row">
-        <button class="btn subtle" data-reset-qty>Volver a las cantidades del plan</button>
+        <button class="btn subtle" data-reset-swaps>Restaurar ejercicios originales</button>
       </div>
       <button class="danger-ghost" data-wipe>Borrar todos los datos</button>
     </section>
@@ -93,11 +108,18 @@ function bind(root) {
     }
   });
 
-  root.querySelector('[data-reset-qty]').addEventListener('click', () => {
-    if (confirm('¿Devolver todas las cantidades a las del plan original?')) {
-      store.resetQuantities();
+  root.querySelector('[data-reset-swaps]').addEventListener('click', () => {
+    if (confirm('¿Volver a los ejercicios del plan de fábrica?')) {
+      store.resetSwaps();
       render(root);
     }
+  });
+
+  root.querySelectorAll('[data-delfood]').forEach(b => {
+    b.addEventListener('click', () => {
+      store.removeCustomFood(b.dataset.delfood);
+      render(root);
+    });
   });
 
   root.querySelector('[data-wipe]').addEventListener('click', () => {

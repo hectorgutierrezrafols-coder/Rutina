@@ -1,35 +1,72 @@
 // ---------------------------------------------------------------------------
 // store.js — La ÚNICA capa que habla con el almacenamiento.
-// Si algún día migramos a IndexedDB o a un backend, se cambia este archivo
-// y el resto de la app no se entera.
+//
+// Esquema v2. La dieta pasa de "checklist del plan" a un registro de lo que
+// realmente has comido: una lista de entradas por día. La plantilla del plan
+// se sigue usando, pero solo como atajo para añadir varias entradas de golpe.
 // ---------------------------------------------------------------------------
 
-import { DEFAULT_TARGETS } from './plan.js';
+import { DEFAULT_TARGETS, DEFAULT_SWAPS, MEALS } from './plan.js';
+import { FOOD_INDEX } from './foods.js';
 
-const KEY = 'entreno.v1';
+const KEY = 'entreno.v1'; // misma clave: migramos el contenido, no lo perdemos
 
 const EMPTY = {
-  version: 1,
-  workouts: {},   // '2026-08-24': { sessionId, sets: { exId: [{kg, reps, done}] }, note }
-  diet: {},       // '2026-08-24': { itemId: true }
-  bodyweight: {}, // '2026-08-24': 70.4
-  qty: {},        // itemId: cantidad personalizada (override global)
+  version: 2,
+  workouts: {},     // fecha -> { sessionId, sets: { exId: [{kg, reps, done}] }, note }
+  diet: {},         // fecha -> { entries: [{uid, foodId, name, qty, unit, per, kcal, prot, carb, fat, mealId}] }
+  bodyweight: {},   // fecha -> kg
   targets: { ...DEFAULT_TARGETS },
+  swaps: {},        // refEjercicio -> idSustituto
+  customFoods: [],  // alimentos añadidos a mano
+  recent: [],       // ids de alimentos usados hace poco
 };
 
-let state = load();
+// Declarado antes de `state` a propósito: migrate() genera uids al cargar.
+let uidCounter = 0;
+
+let state = migrate(load());
 const listeners = new Set();
 
 function load() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return structuredClone(EMPTY);
-    const parsed = JSON.parse(raw);
-    return { ...structuredClone(EMPTY), ...parsed };
+    return { ...structuredClone(EMPTY), ...JSON.parse(raw) };
   } catch (err) {
     console.error('No se pudo leer el almacenamiento:', err);
     return structuredClone(EMPTY);
   }
+}
+
+/**
+ * v1 guardaba la dieta como { fecha: { itemId: true } } contra los ítems del
+ * plan. Lo convertimos en entradas reales para no perder el historial.
+ */
+function migrate(s) {
+  if (s.version === 2) return s;
+
+  const itemIndex = Object.fromEntries(
+    MEALS.flatMap(m => m.items.map(it => [it.id, { ...it, mealId: m.id }]))
+  );
+  const oldQty = s.qty || {};
+  const diet = {};
+
+  for (const [date, day] of Object.entries(s.diet || {})) {
+    if (day && Array.isArray(day.entries)) { diet[date] = day; continue; }
+    const entries = [];
+    for (const itemId of Object.keys(day || {})) {
+      const item = itemIndex[itemId];
+      if (!item) continue;
+      const food = FOOD_INDEX[item.food];
+      if (!food) continue;
+      const qty = oldQty[itemId] !== undefined ? Number(oldQty[itemId]) : item.qty;
+      entries.push(makeEntry(food, qty, item.mealId));
+    }
+    diet[date] = { entries };
+  }
+
+  return { ...s, version: 2, diet, qty: undefined };
 }
 
 function persist() {
@@ -42,14 +79,8 @@ function persist() {
   listeners.forEach(fn => fn(state));
 }
 
-export function subscribe(fn) {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
-}
-
-export function getState() {
-  return state;
-}
+export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+export function getState() { return state; }
 
 // --- Fechas -----------------------------------------------------------------
 
@@ -64,11 +95,28 @@ export function shiftDate(key, days) {
   return todayKey(d);
 }
 
+// --- Sustitución de ejercicios ----------------------------------------------
+
+/** Qué ejercicio se hace realmente en el hueco de `ref`. */
+export function swapOf(ref) {
+  return state.swaps[ref] ?? DEFAULT_SWAPS[ref] ?? ref;
+}
+
+export function setSwap(ref, exerciseId) {
+  if (exerciseId === ref && !DEFAULT_SWAPS[ref]) delete state.swaps[ref];
+  else state.swaps[ref] = exerciseId;
+  persist();
+}
+
+export function resetSwaps() { state.swaps = {}; persist(); }
+
+export function isSwapped(ref) {
+  return swapOf(ref) !== ref;
+}
+
 // --- Entrenamiento ----------------------------------------------------------
 
-export function getWorkout(date) {
-  return state.workouts[date] || null;
-}
+export function getWorkout(date) { return state.workouts[date] || null; }
 
 export function setSet(date, sessionId, exId, index, patch) {
   const w = state.workouts[date] || { sessionId, sets: {}, note: '' };
@@ -86,12 +134,8 @@ export function setWorkoutNote(date, sessionId, note) {
   persist();
 }
 
-export function deleteWorkout(date) {
-  delete state.workouts[date];
-  persist();
-}
+export function deleteWorkout(date) { delete state.workouts[date]; persist(); }
 
-/** Historial de un ejercicio, ordenado de más antiguo a más reciente. */
 export function exerciseHistory(exId) {
   return Object.entries(state.workouts)
     .filter(([, w]) => w.sets && w.sets[exId] && w.sets[exId].some(s => s && s.done))
@@ -110,7 +154,6 @@ export function exerciseHistory(exId) {
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
-/** ¿Cuándo se hizo por última vez este ejercicio, antes de `beforeDate`? */
 export function lastSession(exId, beforeDate) {
   const hist = Object.entries(state.workouts)
     .filter(([date, w]) => date < beforeDate && w.sets && w.sets[exId]
@@ -123,47 +166,128 @@ export function lastSession(exId, beforeDate) {
 
 // --- Dieta ------------------------------------------------------------------
 
-export function getDiet(date) {
-  return state.diet[date] || {};
+function uid() {
+  return `${Date.now().toString(36)}${(uidCounter++).toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 }
 
-export function toggleItem(date, itemId, value) {
-  const day = { ...(state.diet[date] || {}) };
-  if (value) day[itemId] = true;
-  else delete day[itemId];
+/** Construye una entrada de comida a partir de un alimento y una cantidad. */
+export function makeEntry(food, qty, mealId = null) {
+  const f = Number(qty) / food.per;
+  return {
+    uid: uid(),
+    foodId: food.id,
+    name: food.name,
+    qty: Number(qty),
+    unit: food.unit,
+    per: food.per,
+    kcal: food.kcal * f,
+    prot: food.prot * f,
+    carb: (food.carb || 0) * f,
+    fat: (food.fat || 0) * f,
+    mealId,
+  };
+}
+
+export function getEntries(date) {
+  const day = state.diet[date];
+  return (day && day.entries) || [];
+}
+
+export function addEntry(date, food, qty, mealId = null) {
+  const day = state.diet[date] || { entries: [] };
+  day.entries = [...day.entries, makeEntry(food, qty, mealId)];
   state.diet[date] = day;
+  rememberFood(food.id);
   persist();
 }
 
-export function setMealDone(date, itemIds, value) {
-  const day = { ...(state.diet[date] || {}) };
-  itemIds.forEach(id => { if (value) day[id] = true; else delete day[id]; });
+/** `list` son objetos {food, qty, mealId}, no entradas ya construidas. */
+export function addEntries(date, list) {
+  const day = state.diet[date] || { entries: [] };
+  const built = list
+    .filter(x => x && x.food)
+    .map(x => makeEntry(x.food, x.qty, x.mealId ?? null));
+  day.entries = [...day.entries, ...built];
   state.diet[date] = day;
+  built.forEach(e => rememberFood(e.foodId));
   persist();
 }
 
-/** Cantidad efectiva de un ítem: la personalizada si existe, si no la del plan. */
-export function qtyOf(item) {
-  const custom = state.qty[item.id];
-  return custom === undefined || custom === null ? item.qty : custom;
-}
-
-export function setQty(itemId, qty) {
-  if (qty === null || qty === undefined || qty === '') delete state.qty[itemId];
-  else state.qty[itemId] = Number(qty);
+export function updateEntryQty(date, entryUid, qty) {
+  const day = state.diet[date];
+  if (!day) return;
+  day.entries = day.entries.map(e => {
+    if (e.uid !== entryUid) return e;
+    const ratio = Number(qty) / e.qty;
+    if (!Number.isFinite(ratio)) return e;
+    return {
+      ...e, qty: Number(qty),
+      kcal: e.kcal * ratio, prot: e.prot * ratio,
+      carb: e.carb * ratio, fat: e.fat * ratio,
+    };
+  });
   persist();
 }
 
-export function resetQuantities() {
-  state.qty = {};
+export function removeEntry(date, entryUid) {
+  const day = state.diet[date];
+  if (!day) return;
+  day.entries = day.entries.filter(e => e.uid !== entryUid);
   persist();
+}
+
+export function clearDay(date) { delete state.diet[date]; persist(); }
+
+export function dayTotals(date) {
+  const entries = getEntries(date);
+  const raw = entries.reduce((t, e) => ({
+    kcal: t.kcal + e.kcal, prot: t.prot + e.prot,
+    carb: t.carb + e.carb, fat: t.fat + e.fat,
+  }), { kcal: 0, prot: 0, carb: 0, fat: 0 });
+  return {
+    kcal: Math.round(raw.kcal),
+    prot: Math.round(raw.prot),
+    carb: Math.round(raw.carb),
+    fat: Math.round(raw.fat),
+    count: entries.length,
+  };
+}
+
+// --- Alimentos propios ------------------------------------------------------
+
+export function getCustomFoods() { return state.customFoods; }
+
+export function addCustomFood(food) {
+  const id = food.id || 'mio_' + uid();
+  const clean = {
+    id, name: food.name, cat: food.cat || 'Míos',
+    unit: food.unit || 'g', per: Number(food.per) || 100,
+    kcal: Number(food.kcal) || 0, prot: Number(food.prot) || 0,
+    carb: Number(food.carb) || 0, fat: Number(food.fat) || 0,
+    custom: true, source: food.source,
+  };
+  state.customFoods = [clean, ...state.customFoods.filter(f => f.id !== id)];
+  persist();
+  return clean;
+}
+
+export function removeCustomFood(id) {
+  state.customFoods = state.customFoods.filter(f => f.id !== id);
+  persist();
+}
+
+function rememberFood(id) {
+  state.recent = [id, ...state.recent.filter(x => x !== id)].slice(0, 20);
+}
+
+export function getRecentFoods() {
+  const custom = Object.fromEntries(state.customFoods.map(f => [f.id, f]));
+  return state.recent.map(id => custom[id] || FOOD_INDEX[id]).filter(Boolean);
 }
 
 // --- Peso corporal ----------------------------------------------------------
 
-export function getBodyweight(date) {
-  return state.bodyweight[date] ?? null;
-}
+export function getBodyweight(date) { return state.bodyweight[date] ?? null; }
 
 export function setBodyweight(date, kg) {
   if (kg === null || kg === '' || Number.isNaN(Number(kg))) delete state.bodyweight[date];
@@ -179,14 +303,8 @@ export function bodyweightSeries() {
 
 // --- Objetivos --------------------------------------------------------------
 
-export function getTargets() {
-  return state.targets;
-}
-
-export function setTargets(patch) {
-  state.targets = { ...state.targets, ...patch };
-  persist();
-}
+export function getTargets() { return state.targets; }
+export function setTargets(patch) { state.targets = { ...state.targets, ...patch }; persist(); }
 
 // --- Copia de seguridad -----------------------------------------------------
 
@@ -199,11 +317,8 @@ export function importJSON(text) {
   if (typeof parsed !== 'object' || parsed === null) {
     throw new Error('El archivo no contiene datos válidos.');
   }
-  state = { ...structuredClone(EMPTY), ...parsed };
+  state = migrate({ ...structuredClone(EMPTY), ...parsed });
   persist();
 }
 
-export function wipe() {
-  state = structuredClone(EMPTY);
-  persist();
-}
+export function wipe() { state = structuredClone(EMPTY); persist(); }

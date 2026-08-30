@@ -532,3 +532,209 @@ body {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ===========================================================================
+   Añadidos v2: registro libre de dieta y sustitución de ejercicios
+   =========================================================================== */
+
+/* --- Estado de los totales --- */
+
+.total.is-under { border-color: var(--line-soft); }
+.total.is-ok    { border-color: rgba(224, 168, 62, 0.4); }
+.total.is-over  { border-color: rgba(196, 97, 79, 0.4); }
+
+.total-status {
+  display: block;
+  margin-top: 7px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--muted-2);
+}
+.total.is-ok .total-status   { color: var(--brass); }
+.total.is-over .total-status { color: var(--danger); }
+.total.is-over .progress-bar span { background: var(--danger); }
+
+.macro-line {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted-2);
+  margin: -4px 2px 16px;
+}
+.macro-line b { font-family: var(--mono); color: var(--muted); font-weight: 500; }
+
+/* --- Cabecera de comida con botón de añadir --- */
+
+.meal-head { display: flex; align-items: stretch; padding: 0; gap: 0; }
+.meal-fill {
+  flex: 1;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  background: none; border: none; color: inherit;
+  padding: 12px; text-align: left; cursor: pointer; font-family: inherit;
+  min-width: 0;
+}
+.meal-fill .meal-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meal-add {
+  flex: none;
+  width: 46px;
+  background: none;
+  border: none;
+  border-left: 1px solid var(--line-soft);
+  color: var(--brass);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  font-family: inherit;
+}
+.meal-add:active { background: var(--brass-soft); }
+
+/* --- Registro individual --- */
+
+.item.entry { grid-template-columns: 1fr auto auto auto 32px; padding-left: 12px; }
+.item-del {
+  background: none; border: none; color: var(--muted-2);
+  font-size: 19px; line-height: 1; cursor: pointer; padding: 4px 6px;
+}
+.item-del:active { color: var(--danger); }
+
+/* --- Panel deslizante (buscador y sustituciones) --- */
+
+.sheet-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 20;
+}
+.sheet {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 21;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  border-radius: 16px 16px 0 0;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom);
+  animation: sheet-up 0.2s ease;
+}
+@keyframes sheet-up { from { transform: translateY(14px); opacity: 0; } }
+
+.sheet-grip {
+  width: 34px; height: 4px;
+  background: var(--line);
+  border-radius: 2px;
+  margin: 8px auto 4px;
+  flex: none;
+}
+.sheet-search {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  flex: none;
+}
+.sheet-search input {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 15px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.sheet-search input:focus { outline: none; border-color: var(--brass); }
+
+.sheet-label {
+  margin: 10px 16px 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  font-weight: 600;
+  flex: none;
+}
+.sheet-msg { padding: 18px 16px; color: var(--muted-2); font-size: 13px; text-align: center; margin: 0; }
+.sheet-msg.is-error { color: var(--danger); }
+
+.sheet-list { overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; }
+
+.food {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line-soft);
+  color: inherit;
+  text-align: left;
+  padding: 11px 16px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.food:active { background: var(--surface-2); }
+.food.is-on { background: var(--brass-soft); }
+.food.is-on .food-name { color: var(--brass); }
+.food-name { font-size: 14.5px; }
+.food-name em { color: var(--muted-2); font-style: normal; font-size: 12px; }
+.food-macros { font-family: var(--mono); font-size: 11px; color: var(--muted-2); }
+
+.sheet-foot {
+  display: flex; gap: 8px;
+  padding: 10px 12px 14px;
+  border-top: 1px solid var(--line-soft);
+  flex: none;
+}
+.btn.primary { background: var(--brass); border-color: var(--brass); color: #0E1113; font-weight: 600; }
+
+.form { padding: 4px 16px 8px; overflow-y: auto; }
+.form label {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13.5px; color: var(--muted);
+}
+.form input, .form select {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 14px;
+  padding: 7px 9px;
+  width: 140px;
+  text-align: right;
+}
+.form input[data-c="name"] { font-family: var(--sans); text-align: left; width: 170px; }
+.form select { font-family: var(--sans); text-align: left; }
+.form input:focus, .form select:focus { outline: none; border-color: var(--brass); }
+
+/* --- Sustitución de ejercicios --- */
+
+.ex-right { display: flex; align-items: center; gap: 8px; flex: none; }
+.ex-menu {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--muted-2);
+  border-radius: 7px;
+  width: 30px; height: 26px;
+  font-size: 15px; line-height: 1;
+  cursor: pointer; font-family: inherit;
+}
+.ex-menu:active { background: var(--surface-2); }
+
+.swap-flag {
+  display: inline-block;
+  margin-left: 6px;
+  color: var(--brass);
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+.chip.subtle { color: var(--muted-2); font-size: 12px; padding: 6px 12px; }

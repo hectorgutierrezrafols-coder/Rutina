@@ -1,10 +1,11 @@
-import { SESSIONS, SCHEDULE } from '../plan.js';
+import { SESSIONS, SCHEDULE, EXERCISES } from '../plan.js';
 import * as store from '../store.js';
 
 const DAYS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 
 let viewDate = store.todayKey();
-let override = null; // sesión elegida a mano en un día de descanso
+let override = null;   // sesión elegida a mano en un día de descanso
+let swapFor = null;    // ref del ejercicio cuyo selector está abierto
 
 function sessionFor(date) {
   if (override) return SESSIONS[override];
@@ -17,16 +18,10 @@ function sessionFor(date) {
 
 function fmtLast(last, type) {
   if (!last) return 'Primera vez';
-  const best = last.sets.reduce((b, s) => {
-    const kg = Number(s.kg) || 0;
-    return kg > (Number(b.kg) || 0) ? s : b;
-  }, last.sets[0]);
+  const best = last.sets.reduce((b, s) => (Number(s.kg) || 0) > (Number(b.kg) || 0) ? s : b, last.sets[0]);
   const kg = Number(best.kg) || 0;
   const reps = Number(best.reps) || 0;
-  const txt = type === 'weight' || kg > 0
-    ? `${kg} kg × ${reps}`
-    : `${reps} repes`;
-  return `Última: ${txt}`;
+  return `Última: ${type === 'weight' || kg > 0 ? `${kg} kg × ${reps}` : `${reps} repes`}`;
 }
 
 export function render(root) {
@@ -44,13 +39,13 @@ export function render(root) {
           <span class="eyebrow">${isToday ? 'Hoy' : DAYS[d.getDay()]}</span>
           <strong>${d.getDate()} ${d.toLocaleDateString('es-ES', { month: 'long' })}</strong>
         </div>
-        <button class="ghost" data-nav="1" aria-label="Día siguiente"
-          ${isToday ? 'disabled' : ''}>›</button>
+        <button class="ghost" data-nav="1" aria-label="Día siguiente" ${isToday ? 'disabled' : ''}>›</button>
       </div>
       ${session ? `<div class="session-tag">${session.name}</div>` : ''}
     </header>
 
     ${session ? renderSession(session, date, workout) : renderRest()}
+    ${swapFor ? renderSwapSheet(swapFor) : ''}
   `;
 
   bind(root, session, date);
@@ -62,8 +57,7 @@ function renderRest() {
       <p class="rest-title">Día de descanso</p>
       <p class="rest-sub">El músculo se construye hoy, no ayer.</p>
       <div class="rest-actions">
-        ${Object.values(SESSIONS).map(s =>
-          `<button class="chip" data-session="${s.id}">${s.name}</button>`).join('')}
+        ${Object.values(SESSIONS).map(s => `<button class="chip" data-session="${s.id}">${s.name}</button>`).join('')}
       </div>
       <p class="hint">Si quieres entrenar igualmente, elige sesión.</p>
     </div>`;
@@ -71,17 +65,19 @@ function renderRest() {
 
 function renderSession(session, date, workout) {
   const sets = (workout && workout.sets) || {};
-  const totalSets = session.exercises.reduce((n, e) => n + e.sets, 0);
-  const doneSets = Object.values(sets).flat().filter(s => s && s.done).length;
-  const pct = Math.round((doneSets / totalSets) * 100);
+  const total = session.exercises.reduce((n, e) => n + e.sets, 0);
+  const done = Object.values(sets).flat().filter(s => s && s.done).length;
 
   return `
     <div class="progress-strip">
-      <div class="progress-bar"><span style="width:${pct}%"></span></div>
-      <span class="progress-num">${doneSets}/${totalSets}</span>
+      <div class="progress-bar"><span style="width:${Math.round((done / total) * 100)}%"></span></div>
+      <span class="progress-num">${done}/${total}</span>
     </div>
 
-    ${session.exercises.map(ex => renderExercise(ex, sets[ex.id] || [], date)).join('')}
+    ${session.exercises.map(slot => {
+      const exId = store.swapOf(slot.ref);
+      return renderExercise(slot, exId, sets[exId] || [], date);
+    }).join('')}
 
     <label class="note-block">
       <span class="eyebrow">Notas de la sesión</span>
@@ -92,21 +88,22 @@ function renderSession(session, date, workout) {
   `;
 }
 
-function renderExercise(ex, saved, date) {
-  const last = store.lastSession(ex.id, date);
+function renderExercise(slot, exId, saved, date) {
+  const ex = EXERCISES[exId];
+  const swapped = store.isSwapped(slot.ref);
+  const last = store.lastSession(exId, date);
   const isTime = ex.type === 'time';
   const kgLabel = ex.type === 'body' ? 'lastre' : 'kg';
 
-  const rows = Array.from({ length: ex.sets }, (_, i) => {
+  const rows = Array.from({ length: slot.sets }, (_, i) => {
     const s = saved[i] || {};
     return `
-      <div class="setrow ${s.done ? 'is-done' : ''}" data-ex="${ex.id}" data-i="${i}">
+      <div class="setrow ${s.done ? 'is-done' : ''}" data-ex="${exId}" data-i="${i}">
         <span class="setnum">${i + 1}</span>
         ${isTime ? `
           <input class="num" type="number" inputmode="numeric" data-f="reps"
                  value="${s.reps ?? ''}" placeholder="seg" aria-label="Segundos">
-          <span class="unit">s</span>
-          <span class="spacer"></span>
+          <span class="unit">s</span><span class="spacer"></span>
         ` : `
           <input class="num" type="number" inputmode="decimal" step="0.5" data-f="kg"
                  value="${s.kg ?? ''}" placeholder="0" aria-label="Peso en kilos">
@@ -124,17 +121,53 @@ function renderExercise(ex, saved, date) {
   return `
     <section class="ex-card">
       <div class="ex-head">
-        <h2>${ex.name}</h2>
-        <span class="ex-scheme">${ex.sets} × ${ex.reps}</span>
+        <h2>${ex.name}${swapped ? '<span class="swap-flag" title="Sustituido">↺</span>' : ''}</h2>
+        <div class="ex-right">
+          <span class="ex-scheme">${slot.sets} × ${slot.reps}</span>
+          <button class="ex-menu" data-swap="${slot.ref}" aria-label="Cambiar ejercicio">⋯</button>
+        </div>
       </div>
       <div class="ex-meta">
         <span>${fmtLast(last, ex.type)}</span>
         <span class="dot-sep">·</span>
-        <span>${ex.rest}</span>
+        <span>${slot.rest}</span>
       </div>
       <div class="setlist">${rows}</div>
-      <p class="ex-note">${ex.note}</p>
+      <p class="ex-note">${slot.note}</p>
     </section>`;
+}
+
+function renderSwapSheet(ref) {
+  const original = EXERCISES[ref];
+  const current = store.swapOf(ref);
+  const options = [ref, ...(original.alts || [])];
+  // Añade las alternativas del sustituto actual si aporta opciones nuevas
+  if (current !== ref) {
+    (EXERCISES[current].alts || []).forEach(a => { if (!options.includes(a)) options.push(a); });
+    if (!options.includes(current)) options.splice(1, 0, current);
+  }
+
+  return `
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet" role="dialog" aria-label="Cambiar ejercicio">
+      <div class="sheet-grip"></div>
+      <p class="sheet-label">En lugar de ${original.name}</p>
+      <div class="sheet-list">
+        ${options.map(id => {
+          const e = EXERCISES[id];
+          if (!e) return '';
+          return `
+            <button class="food ${id === current ? 'is-on' : ''}" data-pick="${id}">
+              <span class="food-name">${e.name}${id === ref ? ' <em>(original)</em>' : ''}</span>
+              <span class="food-macros">${e.type === 'body' ? 'peso corporal' : e.type === 'time' ? 'por tiempo' : 'con peso'}</span>
+            </button>`;
+        }).join('')}
+      </div>
+      <p class="hint" style="padding:0 16px 4px">
+        Cada ejercicio guarda su propio historial. Al cambiar, el nuevo empieza de cero.
+      </p>
+      <div class="sheet-foot"><button class="btn" data-close>Cerrar</button></div>
+    </div>`;
 }
 
 function bind(root, session, date) {
@@ -142,14 +175,29 @@ function bind(root, session, date) {
     b.addEventListener('click', () => {
       const next = store.shiftDate(viewDate, Number(b.dataset.nav));
       if (next > store.todayKey()) return;
-      viewDate = next;
-      override = null;
-      render(root);
+      viewDate = next; override = null; render(root);
     });
   });
 
   root.querySelectorAll('[data-session]').forEach(b => {
     b.addEventListener('click', () => { override = b.dataset.session; render(root); });
+  });
+
+  root.querySelectorAll('[data-swap]').forEach(b => {
+    b.addEventListener('click', () => { swapFor = b.dataset.swap; render(root); });
+  });
+
+  root.querySelectorAll('[data-close]').forEach(b => {
+    b.addEventListener('click', () => { swapFor = null; render(root); });
+  });
+
+  root.querySelectorAll('[data-pick]').forEach(b => {
+    b.addEventListener('click', () => {
+      store.setSwap(swapFor, b.dataset.pick);
+      swapFor = null;
+      if (navigator.vibrate) navigator.vibrate(8);
+      render(root);
+    });
   });
 
   if (!session) return;
@@ -168,7 +216,6 @@ function bind(root, session, date) {
     row.querySelector('[data-check]').addEventListener('click', () => {
       const done = !row.classList.contains('is-done');
       const patch = { done };
-      // Al marcar una serie vacía, hereda los valores de la anterior
       if (done) {
         const kgInput = row.querySelector('[data-f="kg"]');
         const repsInput = row.querySelector('[data-f="reps"]');
@@ -194,20 +241,14 @@ function bind(root, session, date) {
   });
 
   const note = root.querySelector('[data-note]');
-  if (note) {
-    note.addEventListener('change', () => store.setWorkoutNote(date, session.id, note.value));
-  }
+  if (note) note.addEventListener('change', () => store.setWorkoutNote(date, session.id, note.value));
 
   const clear = root.querySelector('[data-clear]');
-  if (clear) {
-    clear.addEventListener('click', () => {
-      if (confirm('¿Borrar todas las series registradas de este día?')) {
-        store.deleteWorkout(date);
-        override = null;
-        render(root);
-      }
-    });
-  }
+  if (clear) clear.addEventListener('click', () => {
+    if (confirm('¿Borrar todas las series registradas de este día?')) {
+      store.deleteWorkout(date); override = null; render(root);
+    }
+  });
 }
 
 function updateStrip(root, session, date) {
@@ -221,4 +262,4 @@ function updateStrip(root, session, date) {
   if (num) num.textContent = `${done}/${total}`;
 }
 
-export function reset() { viewDate = store.todayKey(); override = null; }
+export function reset() { viewDate = store.todayKey(); override = null; swapFor = null; }
