@@ -1,6 +1,6 @@
 // Service worker: cache-first para el esqueleto de la app.
 // Subir CACHE al cambiar archivos fuerza la actualización en el móvil.
-const CACHE = 'entreno-v2';
+const CACHE = 'entreno-v3';
 
 const SHELL = [
   './',

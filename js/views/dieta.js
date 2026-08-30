@@ -154,7 +154,8 @@ function renderSheet() {
 
   const results = sheet.results || [];
   const recent = store.getRecentFoods();
-  const list = sheet.query ? results : (recent.length ? recent : results);
+  // Sin búsqueda solo se muestran los recientes: nada de volcar el catálogo entero.
+  const list = sheet.query ? results : recent;
 
   return `
     <div class="sheet-backdrop" data-close></div>
@@ -171,12 +172,10 @@ function renderSheet() {
       ${!sheet.query && recent.length ? '<p class="sheet-label">Recientes</p>' : ''}
 
       <div class="sheet-list">
-        ${list.length ? list.map(f => `
-          <button class="food" data-food="${f.id}">
-            <span class="food-name">${f.name}${f.hint ? ` <em>(${f.hint})</em>` : ''}</span>
-            <span class="food-macros">${f.kcal} kcal · ${f.prot} g P${f.unit === 'ud' ? ' / ud' : ' / 100' + f.unit}</span>
-          </button>`).join('')
-          : `<p class="sheet-msg">Sin resultados para “${sheet.query}”.</p>`}
+        ${list.length ? list.map(foodRow).join('')
+          : sheet.query
+            ? `<p class="sheet-msg">Sin resultados para “${sheet.query}”.<br>Puedes crearlo tú abajo.</p>`
+            : '<p class="sheet-msg">Escribe para buscar,<br>o crea un alimento.</p>'}
       </div>
 
       <div class="sheet-foot">
@@ -186,25 +185,49 @@ function renderSheet() {
     </div>`;
 }
 
+function foodRow(f) {
+  return `
+    <button class="food" data-food="${f.id}">
+      <span class="food-name">${f.name}${f.hint ? ` <em>(${f.hint})</em>` : ''}</span>
+      <span class="food-macros">${f.kcal} kcal · ${f.prot} g P${f.unit === 'ud' ? ' / ud' : ' / 100' + f.unit}</span>
+    </button>`;
+}
+
 function renderCustomForm() {
+  // `draft` guarda lo escrito para que un error de validación no lo borre
+  const d = sheet.draft || {};
+  const bad = sheet.invalid || [];
+  const esc = v => String(v ?? '').replace(/"/g, '&quot;');
+  const cls = k => bad.includes(k) ? ' class="is-invalid"' : '';
+  const unit = d.unit || 'g';
+  const perLabel = unit === 'ud' ? 'por unidad' : `por 100 ${unit}`;
+
   return `
     <div class="sheet-backdrop" data-close></div>
     <div class="sheet" role="dialog" aria-label="Crear alimento">
       <div class="sheet-grip"></div>
-      <p class="sheet-label">Alimento propio · valores por 100 g o por unidad</p>
+      <p class="sheet-label">Alimento propio · valores ${perLabel}</p>
       <div class="form">
-        <label>Nombre <input type="text" data-c="name" placeholder="Tupper de mi madre"></label>
+        <label>Nombre <span class="req">*</span>
+          <input type="text" data-c="name"${cls('name')} value="${esc(d.name)}"
+                 placeholder="Tupper de mi madre" autocomplete="off"></label>
         <label>Unidad
           <select data-c="unit">
-            <option value="g">gramos</option>
-            <option value="ml">mililitros</option>
-            <option value="ud">unidad</option>
+            <option value="g"${unit === 'g' ? ' selected' : ''}>gramos</option>
+            <option value="ml"${unit === 'ml' ? ' selected' : ''}>mililitros</option>
+            <option value="ud"${unit === 'ud' ? ' selected' : ''}>unidad</option>
           </select>
         </label>
-        <label>Calorías <input type="number" inputmode="decimal" data-c="kcal" placeholder="0"></label>
-        <label>Proteína <input type="number" inputmode="decimal" data-c="prot" placeholder="0"></label>
-        <label>Hidratos <input type="number" inputmode="decimal" data-c="carb" placeholder="0"></label>
-        <label>Grasas <input type="number" inputmode="decimal" data-c="fat" placeholder="0"></label>
+        <label>Calorías <span class="req">*</span>
+          <input type="number" inputmode="decimal" data-c="kcal"${cls('kcal')}
+                 value="${esc(d.kcal)}" placeholder="0"></label>
+        <label>Proteína <span class="req">*</span>
+          <input type="number" inputmode="decimal" data-c="prot"${cls('prot')}
+                 value="${esc(d.prot)}" placeholder="0"></label>
+        <label>Hidratos
+          <input type="number" inputmode="decimal" data-c="carb" value="${esc(d.carb)}" placeholder="0"></label>
+        <label>Grasas
+          <input type="number" inputmode="decimal" data-c="fat" value="${esc(d.fat)}" placeholder="0"></label>
       </div>
       ${sheet.error ? `<p class="sheet-msg is-error">${sheet.error}</p>` : ''}
       <div class="sheet-foot">
@@ -280,18 +303,17 @@ function bindSheet(root, date) {
     q.addEventListener('input', () => {
       sheet.query = q.value;
       sheet.error = null;
-      sheet.results = searchFoods(q.value, store.getCustomFoods());
+      sheet.results = q.value.trim() ? searchFoods(q.value, store.getCustomFoods()) : [];
       const list = root.querySelector('.sheet-list');
       const label = root.querySelector('.sheet-label');
       if (label) label.remove();
       if (list) {
-        list.innerHTML = sheet.results.length
-          ? sheet.results.map(f => `
-            <button class="food" data-food="${f.id}">
-              <span class="food-name">${f.name}${f.hint ? ` <em>(${f.hint})</em>` : ''}</span>
-              <span class="food-macros">${f.kcal} kcal · ${f.prot} g P${f.unit === 'ud' ? ' / ud' : ' / 100' + f.unit}</span>
-            </button>`).join('')
-          : `<p class="sheet-msg">Sin resultados para “${sheet.query}”.</p>`;
+        const items = q.value.trim() ? sheet.results : store.getRecentFoods();
+        list.innerHTML = items.length
+          ? items.map(foodRow).join('')
+          : q.value.trim()
+            ? `<p class="sheet-msg">Sin resultados para “${q.value}”.<br>Puedes crearlo tú abajo.</p>`
+            : '<p class="sheet-msg">Escribe para buscar,<br>o crea un alimento.</p>';
         bindFoodButtons(root, date);
       }
     });
@@ -301,7 +323,11 @@ function bindSheet(root, date) {
 
   const custom = root.querySelector('[data-custom]');
   if (custom) custom.addEventListener('click', () => {
-    sheet = { mode: 'custom', mealId: sheet.mealId, error: null };
+    sheet = {
+      mode: 'custom', mealId: sheet.mealId, error: null,
+      draft: { name: (sheet.query || '').trim(), unit: 'g' },
+      invalid: [],
+    };
     render(root);
   });
 
@@ -323,19 +349,49 @@ function bindSheet(root, date) {
     }
   });
 
+  // Cada tecleo se guarda en el borrador: si la validación falla, no se pierde
+  root.querySelectorAll('[data-c]').forEach(el => {
+    const key = el.dataset.c;
+    el.addEventListener('input', () => {
+      sheet.draft = { ...(sheet.draft || {}), [key]: el.value };
+      sheet.invalid = (sheet.invalid || []).filter(k => k !== key);
+      el.classList.remove('is-invalid');
+    });
+    if (el.tagName === 'SELECT') {
+      el.addEventListener('change', () => {
+        sheet.draft = { ...(sheet.draft || {}), unit: el.value };
+        render(root); // la etiqueta "por 100 g / por unidad" cambia
+      });
+    }
+  });
+
   const save = root.querySelector('[data-save-custom]');
   if (save) save.addEventListener('click', () => {
-    const val = k => root.querySelector(`[data-c="${k}"]`).value;
-    const name = val('name').trim();
-    if (!name) { sheet.error = 'Ponle un nombre.'; render(root); return; }
-    const kcal = Number(val('kcal'));
-    if (!kcal && kcal !== 0) { sheet.error = 'Faltan las calorías.'; render(root); return; }
-    const unit = val('unit');
+    const d = sheet.draft || {};
+    const missing = [];
+    const name = String(d.name || '').trim();
+    if (!name) missing.push('name');
+    ['kcal', 'prot'].forEach(k => {
+      const raw = String(d[k] ?? '').trim();
+      if (raw === '' || Number.isNaN(Number(raw)) || Number(raw) < 0) missing.push(k);
+    });
+
+    if (missing.length) {
+      const etiquetas = { name: 'el nombre', kcal: 'las calorías', prot: 'la proteína' };
+      sheet.invalid = missing;
+      sheet.error = 'Falta ' + missing.map(k => etiquetas[k]).join(' y ') + '.';
+      render(root); // el borrador se conserva, solo se repinta con el aviso
+      const first = root.querySelector('.is-invalid');
+      if (first) first.focus();
+      return;
+    }
+
+    const unit = d.unit || 'g';
+    const num = k => Number(String(d[k] ?? '').trim()) || 0;
     const food = store.addCustomFood({
       id: 'own_' + Date.now().toString(36),
       name, cat: 'Míos', unit, per: unit === 'ud' ? 1 : 100,
-      kcal, prot: Number(val('prot')) || 0,
-      carb: Number(val('carb')) || 0, fat: Number(val('fat')) || 0,
+      kcal: num('kcal'), prot: num('prot'), carb: num('carb'), fat: num('fat'),
     });
     askQtyAndAdd(root, date, food);
   });

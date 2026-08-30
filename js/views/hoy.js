@@ -124,7 +124,11 @@ function renderExercise(slot, exId, saved, date) {
         <h2>${ex.name}${swapped ? '<span class="swap-flag" title="Sustituido">↺</span>' : ''}</h2>
         <div class="ex-right">
           <span class="ex-scheme">${slot.sets} × ${slot.reps}</span>
-          <button class="ex-menu" data-swap="${slot.ref}" aria-label="Cambiar ejercicio">⋯</button>
+          <button class="ex-menu" data-swap="${slot.ref}" aria-label="Cambiar ejercicio">
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="4" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="16" cy="10" r="1.6"/>
+            </svg>
+          </button>
         </div>
       </div>
       <div class="ex-meta">

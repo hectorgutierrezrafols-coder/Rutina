@@ -718,16 +718,28 @@ body {
 /* --- Sustitución de ejercicios --- */
 
 .ex-right { display: flex; align-items: center; gap: 8px; flex: none; }
+/* El carácter ⋯ se alinea distinto en iOS que en escritorio: con SVG el
+   centrado es idéntico en ambos. */
 .ex-menu {
+  display: grid;
+  place-items: center;
   background: none;
   border: 1px solid var(--line);
-  color: var(--muted-2);
   border-radius: 7px;
-  width: 30px; height: 26px;
-  font-size: 15px; line-height: 1;
-  cursor: pointer; font-family: inherit;
+  width: 32px; height: 28px;
+  padding: 0;
+  cursor: pointer;
 }
+.ex-menu svg { width: 18px; height: 18px; display: block; fill: var(--muted-2); }
 .ex-menu:active { background: var(--surface-2); }
+.ex-menu:active svg { fill: var(--brass); }
+
+/* Campos obligatorios del formulario de alimento propio */
+.req { color: var(--brass); font-size: 11px; vertical-align: super; }
+.form input.is-invalid, .form select.is-invalid {
+  border-color: var(--danger);
+  background: rgba(196, 97, 79, 0.08);
+}
 
 .swap-flag {
   display: inline-block;
